@@ -20,8 +20,16 @@
 #include "addons/TokenHelper.h"
 
 // ================= WIFI & FIREBASE =================
-#define WIFI_SSID "CICI_BIZNET"
-#define WIFI_PASSWORD "cici2024"
+// #define WIFI_SSID "CICI_BIZNET"
+// #define WIFI_PASSWORD "cici2024"
+
+#define WIFI_SSID "iPhone"
+#define WIFI_PASSWORD "kepobanget"
+
+// #define WIFI_SSID "iPhone 17"
+// #define WIFI_PASSWORD "00000000"
+
+
 #define DATABASE_URL "https://sistem-monitoring-73612-default-rtdb.asia-southeast1.firebasedatabase.app/"
 #define DATABASE_SECRET "H8XHQOUjm9H9Ko8RKn0SmQPlOB1CFueofoIPoUGI"
 
@@ -119,25 +127,27 @@ const float TURB_AWAL_DEFAULT_ADC_CLEAR = 4000.0;
 const float TURB_TANDON_DEFAULT_ADC_CLEAR = 4000.0;
 const float TURB_AWAL_NTU_MAX = 500.0;
 const float TURB_AWAL_NTU_THRESHOLD = 25.0;
-// Deadband awal tetap kecil. Tandon memakai deadband moderat karena sensor
-// akhirnya lebih rentan noise dari suplai dan aktuator.
-const float TURB_AWAL_ZERO_NTU_BAND = 2.0;
+// Deadband awal dibuat sangat kecil agar perubahan kekeruhan ringan tetap
+// terbaca. Tandon memakai deadband moderat karena sensor akhirnya lebih rentan
+// noise dari suplai dan aktuator.
+const float TURB_AWAL_ZERO_NTU_BAND = 0.5;
 const float TURB_TANDON_ZERO_NTU_BAND = 10.0;
-const float TURB_AWAL_NTU_GAIN = 2.0;
+const float TURB_AWAL_NTU_GAIN = 12.0;
 const float TURB_TANDON_NTU_GAIN = 1.0;
 // Respons dibuat asimetris (fast attack, slow release): cepat saat air
 // bertambah keruh (ADC turun), tetapi nilai NTU turun perlahan saat air
-// kembali jernih. Dengan interval sensor 1 detik, alpha release 0,0115 memberi
-// waktu paruh sekitar 60 detik menuju nilai bersih.
-const float TURB_AWAL_EMA_ALPHA_TURBID = 0.45;
-const float TURB_AWAL_EMA_ALPHA_CLEAR = 0.0115;
+// kembali jernih. Alpha release awal 0,0029 memberi waktu paruh sekitar
+// 4 menit pada pembacaan normal 1 detik, atau sekitar 1 menit di mode raw
+// 250 ms, sehingga nilai tidak langsung jatuh ke 0 NTU.
+const float TURB_AWAL_EMA_ALPHA_TURBID = 0.95;
+const float TURB_AWAL_EMA_ALPHA_CLEAR = 0.0012;
 const float TURB_TANDON_EMA_ALPHA_TURBID = 0.30;
 const float TURB_TANDON_EMA_ALPHA_CLEAR = 0.0115;
 // Sensor turbidity menghasilkan ADC lebih rendah saat air makin keruh.
 // Kenaikan ADC di atas baseline air bersih bukan kekeruhan dan harus tetap 0 NTU.
 const bool TURB_AWAL_BIDIRECTIONAL_ADC = false;
 const bool TURB_TANDON_BIDIRECTIONAL_ADC = false;
-const float TURB_AWAL_MAX_ADC_STEP = 120.0;
+const float TURB_AWAL_MAX_ADC_STEP = 250.0;
 const float TURB_TANDON_MAX_ADC_STEP = 0.0;
 const uint32_t TURB_AWAL_READ_MS = 250;
 
@@ -196,8 +206,8 @@ const float FILTER_SENSOR_ALPHA = 0.35;
 // relay tidak cepat bolak-balik ketika pembacaan berada dekat batas.
 const float BATAS_KERUH_AWAL = 25.0;
 const float BATAS_KERUH_AWAL_KEMBALI_BERSIH = 20.0;
-const uint8_t TURB_AWAL_KERUH_CONFIRM_READS = 3;
-const uint8_t TURB_AWAL_BERSIH_CONFIRM_READS = 2;
+const uint8_t TURB_AWAL_KERUH_CONFIRM_READS = 2;
+const uint8_t TURB_AWAL_BERSIH_CONFIRM_READS = 8;
 const uint32_t TURB_AWAL_PUMP_STARTUP_IGNORE_MS = 3000;
 const uint32_t SOLENOID_SWITCH_DEADTIME_MS = 400;
 const uint32_t SOLENOID_KERUH_AKTIF_MS = 5000;
@@ -344,6 +354,7 @@ void resetFilterKeputusanTurbidityAwal();
 void setInitialPump(bool aktif);
 void setCleanSolenoid(bool aktif);
 void setTurbidSolenoid(bool aktif);
+bool solenoidRouteApplied(SolenoidRoute route);
 void requestSolenoidRoute(SolenoidRoute route);
 void processSolenoidTransition();
 void publishActuatorStatus();
@@ -2393,10 +2404,8 @@ void markActuatorStatusChanged() {
 }
 
 void setInitialPump(bool aktif) {
-  // Pompa hanya boleh ON jika tepat satu jalur sudah benar-benar terbuka.
-  if (aktif &&
-      (solenoidTransitionState != SOLENOID_TRANSITION_IDLE ||
-       solenoidKeruhAktif == solenoidBersihAktif)) {
+  // Pompa hanya boleh ON jika route yang diminta sudah benar-benar terbuka.
+  if (aktif && !solenoidRouteApplied(requestedSolenoidRoute)) {
     aktif = false;
   }
 
@@ -2654,8 +2663,9 @@ void runManualFlowControl() {
   requestSolenoidRoute(commandSolenoidRoute);
   processSolenoidTransition();
 
-  bool bolehMenyalakanPump = firebaseControlConnected &&
-                             commandPumpAwal12v &&
+  // Pakai command terakhir yang valid; Firebase putus sesaat tidak boleh
+  // menahan pompa saat jalur solenoid sudah benar-benar terbuka.
+  bool bolehMenyalakanPump = commandPumpAwal12v &&
                              solenoidRouteApplied(commandSolenoidRoute);
   setInitialPump(bolehMenyalakanPump);
 
